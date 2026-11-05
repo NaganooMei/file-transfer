@@ -44,6 +44,14 @@ def save_json(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
+def progress(message):
+    try:
+        print(f"[{datetime.datetime.now():%H:%M:%S}] {message}", flush=True)
+    except (OSError, ValueError):
+        # Console errors must not prevent restoring the host's HugeTLB pools.
+        pass
+
+
 def make_plans(worker_nodes):
     workers = len(worker_nodes)
     nodes = sorted(set(worker_nodes))
@@ -115,8 +123,16 @@ class Pools:
 
     @staticmethod
     def write_count(path, count):
+        started = time.monotonic()
+        progress(f"SET {path}: {read_int(path)} -> {count}")
         path.write_text(str(count))
         actual = read_int(path)
+        free = path.with_name("free_hugepages")
+        detail = f", free={read_int(free)}" if free.exists() else ""
+        progress(
+            f"DONE {path}: actual={actual}{detail}, "
+            f"elapsed={time.monotonic() - started:.2f}s"
+        )
         if actual != count:
             raise RuntimeError(
                 f"could not arrange scenario: {path}: requested={count}, actual={actual}"
@@ -255,7 +271,12 @@ def run_benchmark(command, repo, log_path, timeout):
         UCM_LOG_RATE_LIMIT_ENABLE="0",
         UCM_LOG_TO_FILE="0",
     )
-    with log_path.open("w", encoding="utf-8") as log:
+    progress(f"START benchmark; log={log_path}")
+    progress("Command: " + shlex.join(command))
+    with (
+        log_path.open("w", encoding="utf-8") as log,
+        log_path.open("r", encoding="utf-8", errors="replace") as live,
+    ):
         proc = subprocess.Popen(
             command,
             cwd=repo,
@@ -264,16 +285,48 @@ def run_benchmark(command, repo, log_path, timeout):
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+        started = time.monotonic()
+        deadline = started + timeout + 60
+        next_heartbeat = started + 30
+
+        def show_output():
+            output = live.read()
+            if output:
+                print(output, end="", flush=True)
+
         try:
-            exit_code = proc.wait(timeout=timeout + 60)
+            while True:
+                show_output()
+                now = time.monotonic()
+                if now >= deadline:
+                    raise subprocess.TimeoutExpired(command, timeout + 60)
+                try:
+                    exit_code = proc.wait(timeout=min(0.2, deadline - now))
+                    break
+                except subprocess.TimeoutExpired:
+                    if now >= next_heartbeat:
+                        progress(
+                            f"benchmark still running: elapsed={now - started:.0f}s; "
+                            f"log={log_path}"
+                        )
+                        next_heartbeat = now + 30
         except subprocess.TimeoutExpired:
+            progress(
+                f"TIMEOUT benchmark after {timeout + 60}s; stopping its process group"
+            )
             stop_group(proc)
+            show_output()
             return "timeout"
         except BaseException:
             stop_group(proc)
+            show_output()
             raise
         if exit_code != 0:
             stop_group(proc)
+        show_output()
+        progress(
+            f"END benchmark: exit={exit_code}, elapsed={time.monotonic() - started:.2f}s"
+        )
         return exit_code
 
 
@@ -325,6 +378,8 @@ def execute(args, plans, pools, runner=run_benchmark):
     saved = pools.snapshot()
     args.output.mkdir(parents=True, exist_ok=False)
     save_json(args.output / "hugepage-backup.json", saved)
+    progress(f"Results: {args.output}")
+    progress(f"Hugepage backup: {args.output / 'hugepage-backup.json'}")
     command = benchmark_command(args)
     report = {
         "capacity_gib": 160,
@@ -345,11 +400,14 @@ def execute(args, plans, pools, runner=run_benchmark):
             case = {"name": plan["name"], "requested_pages": plan["pages"]}
             report["cases"].append(case)
             save_json(summary, report)
-            print(f"RUN {plan['name']}", flush=True)
+            progress(f"RUN {plan['name']}: configuring 2MiB HugeTLB pools")
             started = time.monotonic()
             try:
                 pools.set_pages(plan["pages"])
                 case["actual_pool"] = pools.snapshot()
+                progress(
+                    f"{plan['name']}: pools ready: {json.dumps(case['actual_pool'])}"
+                )
                 log = args.output / f"{plan['name']}.log"
                 case["exit"] = runner(command, args.repo, log, args.timeout)
                 case.update(
@@ -364,11 +422,13 @@ def execute(args, plans, pools, runner=run_benchmark):
             except Exception as error:
                 case.update(status="FAIL", error=str(error))
                 case["actual_pool"] = pools.snapshot()
+                progress(f"{plan['name']}: FAIL: {error}")
             case["elapsed_s"] = round(time.monotonic() - started, 2)
             save_json(summary, report)
             print(json.dumps(case), flush=True)
     finally:
         try:
+            progress("Restoring original HugeTLB pools...")
             pools.restore(saved)
             report["restored"] = True
             print("Original HugeTLB pools restored.", flush=True)

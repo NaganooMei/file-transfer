@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -183,6 +184,9 @@ def test_restore_rejects_a_different_host_backup_without_mutation(pools):
 @pytest.mark.parametrize("outcome", [0, 1, "timeout", "interrupt"])
 def test_process_cleanup_on_error_timeout_or_interrupt(tmp_path, monkeypatch, outcome):
     stopped = []
+    if outcome == "timeout":
+        ticks = iter([0, 62])
+        monkeypatch.setattr(matrix.time, "monotonic", lambda: next(ticks, 62))
 
     def wait(timeout):
         if outcome == "timeout":
@@ -203,3 +207,80 @@ def test_process_cleanup_on_error_timeout_or_interrupt(tmp_path, monkeypatch, ou
             == outcome
         )
     assert stopped == ([] if outcome == 0 else [proc])
+
+
+def test_benchmark_output_is_visible_before_child_exits_and_saved(
+    tmp_path, monkeypatch, capsys
+):
+    marker = tmp_path / "output-seen"
+
+    def terminal_print(*parts, **kwargs):
+        text = " ".join(map(str, parts))
+        print(*parts, **kwargs)
+        if text == "first\n":
+            marker.touch()
+
+    monkeypatch.setattr(matrix, "print", terminal_print, raising=False)
+    child = (
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        "print('first', flush=True)\n"
+        "deadline = time.monotonic() + 5\n"
+        "while not Path(sys.argv[1]).exists():\n"
+        "    if time.monotonic() >= deadline: sys.exit(7)\n"
+        "    time.sleep(0.01)\n"
+        "print('second', flush=True)\n"
+    )
+    log = tmp_path / "live.log"
+    code = matrix.run_benchmark(
+        [sys.executable, "-u", "-c", child, str(marker)], tmp_path, log, 1
+    )
+    assert code == 0
+    assert log.read_text() == "first\nsecond\n"
+    output = capsys.readouterr().out
+    assert "first\nsecond\n" in output
+    assert "START benchmark" in output and "END benchmark: exit=0" in output
+
+
+def test_quiet_benchmark_prints_heartbeat(tmp_path, monkeypatch, capsys):
+    ticks = iter([0, 30, 31, 31])
+    monkeypatch.setattr(matrix.time, "monotonic", lambda: next(ticks, 31))
+    calls = []
+
+    def wait(timeout):
+        calls.append(timeout)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(["benchmark"], timeout)
+        return 0
+
+    monkeypatch.setattr(
+        matrix.subprocess, "Popen", lambda *a, **kw: SimpleNamespace(wait=wait)
+    )
+    assert matrix.run_benchmark(["benchmark"], tmp_path, tmp_path / "run.log", 1) == 0
+    assert "benchmark still running: elapsed=30s" in capsys.readouterr().out
+
+
+def test_hugepage_progress_is_visible_before_write(pools, monkeypatch, capsys):
+    target = pools.files[0]
+    original = Path.write_text
+
+    def write(path, data, *args, **kwargs):
+        if path == target:
+            assert f"SET {target}:" in capsys.readouterr().out
+        return original(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", write)
+    pools.write_count(target, 5)
+    assert f"DONE {target}: actual=5" in capsys.readouterr().out
+
+
+def test_console_failure_does_not_prevent_pool_restoration(pools, monkeypatch):
+    saved = pools.snapshot()
+    pools.set_pages({0: 0, 1: 0})
+
+    def broken_console(*args, **kwargs):
+        raise BrokenPipeError()
+
+    monkeypatch.setattr(matrix, "print", broken_console, raising=False)
+    pools.restore(saved)
+    assert pools.snapshot() == saved

@@ -31,6 +31,8 @@ sudo -E "$(command -v python3)" cache2_hugetlb_160g.py \
 
 节点列表按实际机器修改；rank 数由列表长度决定。完整说明见上方文档。
 
+运行时实时显示逐节点大页配置、benchmark 输出和退出结果；完整 benchmark 日志仍保存到结果目录，安静运行时每 30 秒打印一次存活提示。
+
 ## 目录约定
 
 - `scripts/`：可独立下载使用的脚本。

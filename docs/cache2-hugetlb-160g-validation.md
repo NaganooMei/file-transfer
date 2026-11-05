@@ -75,6 +75,14 @@ echo 2048 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepag
 
 输出目录包括 `hugepage-backup.json`、四份 case 日志和 `summary.json`。每个 case 要求 benchmark 退出 0、出现完整 Load summary、记录全部 rank 的页类型，并满足该组的预期。`--verify` 校验失败会使 benchmark 失败。
 
+执行时会实时显示：
+
+- 大页清零、分配和恢复的每次写入：完整 sysfs 路径、原值、目标值、实际值、空闲页数及耗时。`SET` 在写入前打印；若分配较慢，可直接看出停在哪个节点。
+- `START benchmark`、实际执行命令和日志文件路径；benchmark 的 stdout/stderr 同时显示在终端并保存在对应 case 日志中。
+- benchmark 每运行 30 秒打印一次存活提示，结束时打印退出码和耗时。
+
+看到 `RUN` 后的 `SET` 表示正在配置大页；看到 `START benchmark` 才表示已启动 `cache_bw.py`。更新脚本后，新日志在下次启动时生效，已经运行的旧进程不会自动更新。
+
 正常结束、超时、Ctrl+C 或 SIGTERM 均进入恢复流程；只终止本次脚本启动的进程组。请确认最后打印 `Original HugeTLB pools restored.`，且 `summary.json` 中 `restored` 为 `true`。脚本退出 0 代表四组和恢复均成功。
 
 SIGKILL、断电等无法执行清理时，用备份恢复：
