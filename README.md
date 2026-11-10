@@ -6,6 +6,8 @@
 
 | 文件 | 用途 |
 | --- | --- |
+| [v4_tp4_diag.sh](scripts/v4_tp4_diag.sh) | A5 V4 四 worker：Posix AIO、Cache 命中与 Posix 命中对照，截取关键输出 |
+| [V4 对照说明](docs/v4-tp4-diag.md) | 下载命令、测试规模、分段指标和结果文件 |
 | [cache2_hugetlb_160g.py](scripts/cache2_hugetlb_160g.py) | 160GiB Cache2 NUMA / 2MiB 大页回退四场景验证，包含检测、清零、分配与恢复 |
 | [验证说明](docs/cache2-hugetlb-160g-validation.md) | 环境要求、运行命令、结果判定和恢复方式 |
 
