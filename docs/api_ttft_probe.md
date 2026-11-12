@@ -1,7 +1,8 @@
 # Streaming API latency probe
 
-`scripts/api_ttft_probe.py` compares OpenAI-compatible chat endpoints using a short,
-synthetic Python question. It does not read local chat history or configuration.
+`scripts/api_ttft_probe.py` compares OpenAI-compatible chat endpoints and Anthropic
+Messages endpoints using a synthetic Python question. It does not read local chat
+history or configuration.
 
 Install Python 3 and `requests` (`python -m pip install requests`). Set an API key
 in an environment variable, then run:
@@ -29,6 +30,26 @@ impersonate a production coding client.
 `--thinking default` to omit that provider-specific parameter, or
 `--thinking enabled` to request thinking. Not every provider supports this field.
 `--max-tokens` defaults to 64.
+
+Use `--format anthropic` with a `/v1/messages` endpoint (including a local gateway).
+The credential must belong to that endpoint: a gateway may require its own local
+token, rather than an upstream provider key. Anthropic enabled thinking uses a
+1024-token budget and requires `--max-tokens` greater than 1024.
+
+To investigate coding-agent workloads, repeat with synthetic context and tools:
+
+```sh
+python scripts/api_ttft_probe.py \
+  --url https://example.com/v1/chat/completions \
+  --model model-id --key-env API_KEY --repeat 2 --thinking default \
+  --context-functions 3000 --tools 24 --max-tokens 256
+```
+
+3000 generated Python functions produce roughly 75K input tokens on DeepSeek;
+24 synthetic tool definitions add roughly 2.5K tokens. Exact counts vary by model.
+No tools are executed. Long-context requests can cost substantially more than the
+default short probe. Compare a run without `--tools` to one with it; examine actual
+usage and cache hits, and keep concurrent traffic low when comparing latency.
 
 Each output line is JSON:
 
